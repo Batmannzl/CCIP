@@ -1,0 +1,3 @@
+cluster-config: cluster.config.yml
+
+latency-wait: 60

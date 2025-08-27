@@ -1,0 +1,242 @@
+
+__default__:
+  name: CCIP
+  tags: CCIP,snakemake
+  volume_snakemake: snakemake
+  volume_home: home
+  volume_workdir: workdir
+  volume_data: annotations
+  cpu: 1
+  mem: 1
+  container: uri/to/container
+
+bbduk: 
+  name: bbduk
+  tags: bbduk,bbmap,snakemake
+  cpu: 8
+  mem: 12
+  container: uri/to/container
+
+fastqc: 
+  name: fastqc
+  tags: fastqc,snakemake
+  cpu: 1
+  mem: 2
+  container: uri/to/container
+
+bwa: 
+  name: bwa
+  tags: bwa,snakemake
+  cpu: 8
+  mem: 16
+  container: uri/to/container
+
+filtering:
+  name: filtering
+  tags: filtering,samtools,snakemake
+  cpu: 8
+  mem: 4
+  container: uri/to/container
+
+indexing:
+  name: indexing
+  tags: indexing,samtools,snakemake
+  cpu: 1
+  mem: 4
+  container: uri/to/container
+
+flagstat:
+  name: flagstat
+  tags: flagstat,snakemake
+  cpu: 1
+  mem: 4
+  container: uri/to/container
+
+collectAlignmentSummaryMetrics:
+  name: collectAlignmentSummaryMetrics
+  tags: collectAlignmentSummaryMetrics,picard,snakemake
+  cpu: 1
+  mem: 8
+  container: uri/to/container
+
+mosdepth:
+  name: mosdepth
+  tags: mosdepth,snakemake
+  cpu: 1
+  mem: 8
+  container: uri/to/container
+  
+fixmate: 
+  name: fixmate
+  tags: fixmate,samtools,snakemake
+  cpu: 8
+  mem: 8
+  container: uri/to/container
+  
+markduplicates:
+  name: markduplicates
+  tags: markduplicates,picard,snakemake
+  cpu: 8
+  mem: 8
+  container: uri/to/container
+
+collectDuplicateMetrics:
+  name: collectDuplicateMetrics
+  tags: collectDuplicateMetrics,gatk,snakemake
+  cpu : 3
+  mem: 8
+  container: uri/to/container
+
+realignerTargetCreator:
+  name: realignerTargetCreator
+  tags: realignerTargetCreator,gatk,snakemake
+  cpu: 8
+  mem: 12
+  container: uri/to/container
+
+indelRealigner:
+  name: indelRealigner
+  tags: indelRealigner,gatk,snakemake
+  cpu: 8
+  mem: 12
+  container: uri/to/container
+
+baseRecalibrator: 
+  name: baseRecalibrator
+  tags: baseRecalibrator,gatk,snakemake
+  cpu: 8
+  mem: 16
+  container: uri/to/container
+  
+applyBQSR: 
+  name: applyBQSR
+  tags: applyBQSR,gatk,snakemake
+  cpu: 8
+  mem: 12
+  container: uri/to/container
+
+idxstats:
+  name: idxstats
+  tags: idxstats,snakemake
+  cpu: 1
+  mem: 4
+  container: uri/to/container
+
+analyzeCovariates:
+  name: analyzeCovariates
+  tags: analyzeCovariates,gatk,snakemake
+  cpu: 1
+  mem: 4
+  container: uri/to/container
+
+collectInsertSizeMetrics:
+  name: collectInsertSizeMetrics
+  tags: collectInsertSizeMetrics,picard,snakemake
+  cpu: 4
+  mem: 8
+  container: uri/to/container
+
+qualimap:
+  name: qualimap
+  tags: qualimap,snakemake
+  cpu: 4
+  mem: 8
+  container: uri/to/container
+  
+validate:
+  name: validate
+  tags: validate,gatk,snakemake
+  cpu: 1
+  mem: 4
+  container: uri/to/container
+
+collectHsMetrics:
+  name: collectHsMetrics
+  tags: collectHsMetrics,picard,snakemake
+  cpu: 3
+  mem: 4
+  container: uri/to/container
+
+mpileup: 
+  name: mpileup
+  tags: mpileup,snakemake
+  cpu: 1
+  mem: 4
+  container: uri/to/container
+
+haplotypecaller:
+  name: haplotypecaller
+  tags: haplotypecaller,gatk,snakemake
+  cpu: 8
+  mem: 12
+  container: uri/to/container
+
+vardict:
+  name: vardict
+  tags: vardict,snakemake
+  cpu: 2
+  mem: 9
+  container: uri/to/container
+
+pindel:
+  name: pindel
+  tags: pindel,snakemake
+  cpu: 8
+  mem: 16
+  container: uri/to/container
+
+varscan:
+  name: varscan
+  tags: varscan,snakemake
+  cpu: 2
+  mem: 8
+  container: uri/to/container
+
+deepvariant:
+  name: deepvariant
+  tags: deepvariant,snakemake
+  cpu: 20
+  mem: 32
+  container: uri/to/container
+
+decompose: 
+  name: decompose
+  tags: decompose,snakemake
+  cpu: 1
+  mem: 4
+  container: uri/to/container
+
+normalize: 
+  name: normalize
+  tags: normalize,snakemake
+  cpu: 1
+  mem: 4
+  container: uri/to/container
+
+uniq:
+  name: uniq
+  tags: uniq,snakemake
+  cpu: 1
+  mem: 4
+  container: uri/to/container
+
+vusion:
+  name: vusion
+  tags: vusion,snakemake
+  cpu: 1
+  mem: 8
+  container: uri/to/container
+
+vcfstats:
+  name: vcfstats
+  tags: vcfstats,bcftools,snakemake
+  cpu: 1
+  mem: 8
+  container: uri/to/container
+
+multiqc:
+  name: multiqc
+  tags: multiqc,snakemake
+  cpu: 1
+  mem: 4
+  container: uri/to/container

@@ -1,0 +1,617 @@
+configfile: "config/config.yml"
+
+workdir: config["workdir"]
+
+samples = list(config["samples"].keys())
+
+wildcard_constraints:
+    VC = r"(varscan|vardict|pindel|haplotypecaller|deepvariant)",
+    ALN = r"(bwa)"
+
+multiqc = expand("work/results/{sample}/multiqc/{sample}.multiqc.html", sample=samples)
+vcf = expand("work/results/{sample}/vusion/{sample}.vcf", sample=samples)
+
+rule all:
+    input:
+        vcf,
+        multiqc,
+    resources:
+        tmpdir=config["tmpdir"]
+
+rule bbduk:
+    output:
+        R1 = "work/results/{sample}/bbduk/{sample}.R1.trim.fastq.gz",
+        R2 = "work/results/{sample}/bbduk/{sample}.R2.trim.fastq.gz"
+    log:
+        "work/results/logs/{sample}/bbduk.log"
+    message: 
+        "Trimming {params.R1} {params.R2} with BBDUK"
+    threads: 
+        config["resources"]["bbduk"]["threads"]
+    params:
+        options = config["rules"]["bbduk"]["options"],
+        ref = config["rules"]["bbduk"]["adapters"],
+        R1 = config["data"]+"/{sample}_R1_001.fastq.gz",
+        R2 = config["data"]+"/{sample}_R2_001.fastq.gz"
+    shell:
+        'bbduk.sh -Xmx7g -Xms7g threads={threads} in1="{params.R1}" in2="{params.R2}" out1="{output.R1}" out2="{output.R2}" ref="{params.ref}" {params.options} 2> {log}'
+
+rule fastqc:
+    input:
+        fastq = "{DIR}/{sample}/bbduk/{sample}.{read}.trim.fastq.gz"
+    output:
+        html = "{DIR}/{sample}/fastqc/{sample}.{read}.trim_fastqc.html",
+        zip = "{DIR}/{sample}/fastqc/{sample}.{read}.trim_fastqc.zip"
+    message: 
+        "Quality check with FASTQC on {input.fastq}"
+    log:
+        "{DIR}/logs/{sample}/{sample}_{read}_fastqc.log"
+    params:
+        options = config["rules"]["fastqc"]["options"],
+        workdir = config["workdir"]
+    shell:
+        'fastqc -o {params.workdir}work/results/{wildcards.sample}/fastqc/ {input.fastq} {params.options} 2>&1 | tee -a {log}'
+
+rule bwa:
+    input:
+        R1 = "work/results/{sample}/bbduk/{sample}.R1.trim.fastq.gz",
+        R2 = "work/results/{sample}/bbduk/{sample}.R2.trim.fastq.gz"
+    output:
+        sam=temp(ensure("work/results/{sample}/bwa/{sample}.aln.out.sam", non_empty=True))
+    message: 
+        "Mapping {input.R1} {input.R2} with {params.reference} as reference"
+    log:
+        "work/results/logs/{sample}/bwa.log"
+    benchmark:
+        "work/results/{sample}.bwa.benchmark.txt"
+    threads: 
+        config["resources"]["bwa"]["threads"]
+    params:
+        reference = config["ref"]["fasta"],
+        options = config["rules"]["bwa"]["options"],
+        panel = config["metadatas"]["panel_name"],
+        target = config["metadatas"]["target_type"],
+        hospit = config["metadatas"]["hospit"],
+        sequencer = config["metadatas"]["sequencer"],
+    shell:
+        'bwa mem -t {threads} {params.options} -R \'@RG\\tID:{params.panel}\\tPL:{params.sequencer}\\tLB:{params.target}\\tPU:{params.hospit}\\tSM:{wildcards.sample}\' "{params.reference}" "{input.R1}" "{input.R2}" > {output.sam}  2> {log}'
+
+rule filtering:
+    input:
+        sam = "{DIR}/{sample}/{ALN}/{sample}.aln.out.sam"
+    output:
+        bam = "{DIR}/{sample}/{ALN}/{sample}.aln.out.bam"
+    message: 
+        "Filtering {input.sam} with samtools"
+    log:
+        "{DIR}/logs/{sample}/{ALN}/filter.log"
+    threads: 
+        config["resources"]["filtering"]["threads"]
+    shell:
+        '(samtools view -hF 256 {input.sam} | samtools sort -@ {threads} -O bam -o {output.bam} -) 2>&1 | tee -a {log}'
+
+rule indexing:
+    input:
+        bam = "{DIR}/{sample}/bwa/{sample}.aln.out.bam"
+    output:
+        bai = "{DIR}/{sample}/bwa/{sample}.aln.out.bam.bai"
+    message: 
+        "Indexing {input.bam} with samtools"
+    log:
+        "{DIR}/logs/{sample}/bwa/indexing.log"
+    shell:
+        'samtools index -o {output.bai} {input.bam} 2>&1 | tee -a {log}'
+
+rule realignerTargetCreator:
+    input:
+        bam = "{DIR}/{sample}/bwa/{sample}.aln.out.bam",
+        bai = "{DIR}/{sample}/bwa/{sample}.aln.out.bam.bai"
+    output:
+        intervals = temp("{DIR}/{sample}/rtc/bwa/{sample}.aln.out.intervals")
+    message: 
+        "Creating realignment targets from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/bwa/realignerTargetCreator.log"
+    params:
+        options = config["rules"]["realignerTargetCreator"]["options"],
+        reference = config["ref"]["fasta"],
+        known_indels = config["ref"]["know_indels"]
+    threads: 
+        config["resources"]["realignerTargetCreator"]["threads"]
+    shell:
+        'java -Xmx11000m -Xms11000m -XX:ParallelGCThreads={threads} -XX:+AggressiveHeap -jar /usr/share/java/GenomeAnalysisTK.jar -T RealignerTargetCreator {params.options} -R "{params.reference}" -known "{params.known_indels}" -I "{input.bam}" -o "{output}" 2>&1 | tee -a {log}'
+
+rule indelRealigner:
+    input:
+        bam = "{DIR}/{sample}/bwa/{sample}.aln.out.bam",
+        bai = "{DIR}/{sample}/bwa/{sample}.aln.out.bam.bai",
+        intervals = "{DIR}/{sample}/rtc/bwa/{sample}.aln.out.intervals"
+    output:
+        bam = temp("{DIR}/{sample}/rtc/bwa/{sample}.raln.out.bam"),
+        bai = temp("{DIR}/{sample}/rtc/bwa/{sample}.raln.out.bai")
+    message: 
+        "Realigning indels from {input.bam} with {input.intervals}"
+    log:
+        "{DIR}/logs/{sample}/bwa/indelRealigner.log"
+    params:
+        options = config["rules"]["indelRealigner"]["options"],
+        reference = config["ref"]["fasta"],
+        known_indels = config["ref"]["know_indels"]
+    threads: 
+        config["resources"]["indelRealigner"]["threads"]
+    shell:
+        'java -Xmx11000m -Xms11000m -XX:ParallelGCThreads={threads} -XX:+AggressiveHeap -jar /usr/share/java/GenomeAnalysisTK.jar -T IndelRealigner {params.options} -R "{params.reference}" -known "{params.known_indels}" -targetIntervals "{input.intervals}" -I "{input.bam}" -o "{output.bam}" 2>&1 | tee -a {log}'
+
+rule fixmate:
+    input:
+        bam="{DIR}/{sample}/rtc/bwa/{sample}.raln.out.bam"
+    output:
+        bam=temp("{DIR}/{sample}/fixmate/{sample}.fixed.bam")
+    message: 
+        "Fixing mate pairs from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/fixmate.log"
+    threads: 
+        config["resources"]["fixmate"]["threads"]
+    params:
+        options = config["rules"]["fixmate"]["options"]
+    shell:
+        '(samtools sort -n -@ {threads} -O bam {input.bam} | samtools fixmate -m - - | samtools sort -@ {threads} -O bam -o {output} -) 2>&1 | tee -a {log}'
+
+rule markduplicates:
+    input:
+        bam="{DIR}/{sample}/fixmate/{sample}.fixed.bam"
+    output:
+        bam = temp("{DIR}/{sample}/markduplicates/{sample}.marked.bam"),
+        bai = temp("{DIR}/{sample}/markduplicates/{sample}.marked.bai"),
+        metrics = "{DIR}/{sample}/markduplicates/{sample}.marked.metrics.txt"
+    message: 
+        "Marking duplicates from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/markdup.log"
+    threads: 
+        config["resources"]["markduplicates"]["threads"]
+    params:
+        options = config["rules"]["markduplicates"]["options"]
+    shell:
+        'java -Xmx7500m -Xms7500m -XX:ParallelGCThreads={threads} -XX:+AggressiveHeap -jar /usr/share/java/picard.jar MarkDuplicates {params.options} INPUT="{input.bam}" OUTPUT="{output.bam}" METRICS_FILE="{output.metrics}" 2>&1 | tee -a {log}'
+
+rule collectDuplicateMetrics:
+    input:
+        bam = "{DIR}/{sample}/markduplicates/{sample}.marked.bam"
+    output:
+        metrics = "{DIR}/{sample}/collectDuplicateMetrics/{sample}.duplicate.metrics.txt"
+    message: 
+        "Collecting duplicate metrics from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/CollectDuplicateMetrics.log"
+    threads: 
+        config["resources"]["collectDuplicateMetrics"]["threads"]
+    params:
+        options = config["rules"]["collectDuplicateMetrics"]["options"]
+    shell:
+        'java -Xmx3500m -Xms3500m -XX:ParallelGCThreads={threads} -XX:+AggressiveHeap -jar /usr/share/java/GenomeAnalysisTK.jar CollectDuplicateMetrics {params.options} -I {input.bam} -M {output.metrics} 2>&1 | tee -a {log}'
+
+rule mosdepth:
+    input:
+        bam = "{DIR}/{sample}/markduplicates/{sample}.marked.bam",
+        bai = "{DIR}/{sample}/markduplicates/{sample}.marked.bai"
+    output:
+        summary = "{DIR}/{sample}/mosdepth/{sample}.mosdepth.summary.txt"
+    message: 
+        "Collecting depth of coverage from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/mosdepth.log"
+    params:
+        options = config["rules"]["mosdepth"]["options"],
+        bed = config["ref"]["bed"],
+        workdir = config["workdir"]
+    shell:
+        'mosdepth {params.workdir}{wildcards.DIR}/{wildcards.sample}/mosdepth/{wildcards.sample} {input.bam} 2>&1 | tee -a {log}'
+
+rule collectAlignmentSummaryMetrics:
+    input:
+        bam = "{DIR}/{sample}/markduplicates/{sample}.marked.bam"
+    output:
+        summary = "{DIR}/{sample}/collectAlignmentSummaryMetrics/{sample}.alignment.metrics.txt"
+    log:
+        "{DIR}/logs/{sample}/collectAlignmentSummaryMetrics.log"
+    params:
+        options = config["rules"]["collectAlignmentSummaryMetrics"]["options"],
+        reference = config["ref"]["fasta"]
+    shell:
+        'java -Xmx3500m -Xms3500m -XX:ParallelGCThreads=1 -XX:+AggressiveHeap -jar /usr/share/java/picard.jar CollectAlignmentSummaryMetrics {params.options} R={params.reference} I={input.bam} O={output.summary} 2>&1 | tee -a {log}'
+
+rule baseRecalibrator:
+    input:
+        bam = "{DIR}/{sample}/markduplicates/{sample}.marked.bam",
+        bai = "{DIR}/{sample}/markduplicates/{sample}.marked.bai"
+    output:
+        metrics = temp("{DIR}/{sample}/baseRecalibrator/{sample}.recalibration.metrics.txt")
+    message:
+        "Recalibrating base quality scores from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/BaseRecalibrator.log"
+    params:
+        options = config["rules"]["baseRecalibrator"]["options"],
+        reference = config["ref"]["fasta"],
+        known_indels = config["ref"]["know_indels"],
+        known_snps = config["ref"]["know_snps"],
+        intervals = config["ref"]["bed"]
+    threads: config["resources"]["baseRecalibrator"]["threads"]
+    run:
+        if params.intervals:
+            shell('java -Xmx10500m -Xms10500m -XX:ParallelGCThreads={threads} -XX:+AggressiveHeap -jar /usr/share/java/GenomeAnalysisTK.jar BaseRecalibrator {params.options} -R "{params.reference}" --intervals "{params.intervals}" --known-sites "{params.known_snps}" --known-sites "{params.known_indels}" -I "{input.bam}" -O "{output}" 2>&1 | tee -a {log}')
+        else:
+            shell('java -Xmx10500m -Xms10500m -XX:ParallelGCThreads={threads} -XX:+AggressiveHeap -jar /usr/share/java/GenomeAnalysisTK.jar BaseRecalibrator {params.options} -R "{params.reference}" --known-sites "{params.known_snps}" --known-sites "{params.known_indels}" -I "{input.bam}" -O "{output}" 2>&1 | tee -a {log}')
+
+rule applyBQSR:
+    input:
+        bam = "{DIR}/{sample}/markduplicates/{sample}.marked.bam",
+        bai = "{DIR}/{sample}/markduplicates/{sample}.marked.bai",
+        bqsr = "{DIR}/{sample}/baseRecalibrator/{sample}.recalibration.metrics.txt"
+    output:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam",
+        bai = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bai"
+    message:
+        "Applying base quality score recalibration from {input.bqsr} to {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/ApplyBQSR.log"
+    params:
+        options = config["rules"]["applyBQSR"]["options"],
+        reference = config["ref"]["fasta"]
+    threads: config["resources"]["applyBQSR"]["threads"]
+    shell:
+        'java -Xmx11000m -Xms11000m -XX:ParallelGCThreads={threads} -XX:+AggressiveHeap -jar /usr/share/java/GenomeAnalysisTK.jar ApplyBQSR {params.options} -R "{params.reference}" -bqsr "{input.bqsr}" -I "{input.bam}" -O "{output.bam}" 2>&1 | tee -a {log}'
+
+rule idxstats:
+    input:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam",
+        bai = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bai"
+    output:
+        summary = "{DIR}/{sample}/idxstats/{sample}.idxstats.txt"
+    message:
+        "Collecting index statistics from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/idxstats.log"
+    params:
+        options = config["rules"]["idxstats"]["options"]
+    shell:
+        'samtools idxstats {params.options} {input.bam} > {output.summary} 2> {log}'
+
+rule analyzeCovariates:
+    input:
+        bqsr = "{DIR}/{sample}/baseRecalibrator/{sample}.recalibration.metrics.txt"
+    output:
+        pdf = "{DIR}/{sample}/analyzeCovariates/{sample}.analyzecovariates.pdf"
+    log:
+        "{DIR}/logs/{sample}/analyzeCovariates.log"
+    shell:
+        'java -Xmx4000m -Xms4000m -XX:ParallelGCThreads=1 -XX:+AggressiveHeap -jar /usr/share/java/GenomeAnalysisTK.jar AnalyzeCovariates -bqsr {input.bqsr} -plots {output.pdf} 2>&1 | tee -a {log}'    
+
+rule collectInsertSizeMetrics:
+    input:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam"
+    output:
+        summary = "{DIR}/{sample}/collectInsertSizeMetrics/{sample}.insert_size.metrics.txt",
+        pdf = "{DIR}/{sample}/collectInsertSizeMetrics/{sample}.collectInsertSizeMetrics.pdf"
+    message:
+        "Collecting insert size metrics from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/collectInsertSizeMetrics.log"
+    params:
+        options = config["rules"]["collectInsertSizeMetrics"]["options"],
+        reference = config["ref"]["fasta"]
+    shell:
+        'java -Xmx3500m -Xms3500m -XX:ParallelGCThreads=3 -XX:+AggressiveHeap -jar /usr/share/java/picard.jar CollectInsertSizeMetrics {params.options} INPUT={input.bam} REFERENCE_SEQUENCE={params.reference} OUTPUT={output.summary} HISTOGRAM_FILE={output.pdf} 2>&1 | tee -a {log}'
+
+rule qualimap:
+    input:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam"
+    output:
+        html = "{DIR}/{sample}/qualimap/qualimapReport.html"
+    message:
+        "Running qualimap on {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/qualimap.log"
+    params:
+        options = config["rules"]["qualimap"]["options"],
+        bed = config["ref"]["bed"],
+        workdir = config["workdir"]
+    shell:
+        'qualimap bamqc {params.options} -bam {input.bam} -gff {params.bed} -outdir {params.workdir}{wildcards.DIR}/{wildcards.sample}/qualimap -outformat HTML'
+
+rule validate:
+    input:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam"
+    output:
+        summary = "{DIR}/{sample}/validate/{sample}.validation.txt"
+    message:
+        "Validating {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/validate.log"
+    params:
+        options = config["rules"]["validate"]
+    shell:
+        'java -jar /usr/share/java/picard.jar ValidateSamFile {params.options} I="{input.bam}" O="{output.summary}" MODE=SUMMARY 2>&1 | tee -a {log}'
+
+rule flagstat:
+    input:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam"
+    output:
+        summary = "{DIR}/{sample}/flagstat/{sample}.flagstat.txt"
+    message:
+        "Collecting statistics from {input.bam} about flags"
+    log:
+        "{DIR}/logs/{sample}/flagstat.log"
+    params:
+        options = config["rules"]["flagstat"]
+    shell:
+        'samtools flagstat "{input.bam}" > "{output.summary}" 2> {log}'
+
+rule collectHsMetrics:
+    input:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam"
+    output:
+        metrics = "{DIR}/{sample}/collectHsMetrics/{sample}.hs.metrics.txt",
+        coverage = "{DIR}/{sample}/collectHsMetrics/{sample}.coverage.txt"
+    log:
+        "{DIR}/logs/{sample}/collectHsMetrics.log"
+    params:
+        options = config["rules"]["collectHsMetrics"]["options"],
+        reference = config["ref"]["fasta"],
+        baits = config["ref"]["bed"].replace(".bed", "_baits.interval"),
+        stats = config["ref"]["bed"].replace(".bed", "_stats.interval")
+    threads: config["resources"]["collectHsMetrics"]["threads"]
+    shell:
+        'java -Xmx3500m -Xms3500m -XX:ParallelGCThreads={threads} -XX:+AggressiveHeap -jar /usr/share/java/picard.jar CollectHsMetrics {params.options} INPUT={input.bam} BAIT_INTERVALS={params.baits} TARGET_INTERVALS={params.stats} R={params.reference} OUTPUT={output.metrics} PER_TARGET_COVERAGE={output.coverage} 2>&1 | tee -a {log}'
+
+rule mpileup:
+    input:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam",
+        bai = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bai"
+    output:
+        mpileup = "{DIR}/{sample}/mpileup/{sample}.pileup"
+    message:
+        "Creating pileup file from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/mpileup.log"
+    params:
+        samtools_options=config["rules"]["mpileup"]["samtools"]["options"],
+        bed=config["ref"]["bed"],
+        reference=config["ref"]["fasta"]
+    shell:
+        'samtools mpileup {params.samtools_options} -f {params.reference} -l {params.bed} {input.bam} -o {output.mpileup} 2>&1 | tee -a {log}'
+
+rule haplotypecaller:
+    input:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam",
+        bai = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bai"
+    output:
+        vcf = "{DIR}/{sample}/haplotypecaller/{sample}_HC.vcf",
+        idx = "{DIR}/{sample}/haplotypecaller/{sample}_HC.vcf.idx",
+    message:
+        "Calling variants with haplotypecaller from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/haplotypecaller.log"
+    benchmark:
+        "{DIR}/{sample}.hc.benchmark.txt"
+    params:
+        options = config["rules"]["haplotypecaller"]["options"],
+        reference = config["ref"]["fasta"],
+        bed = config["ref"]["bed"],
+        known_snps = config["ref"]["know_snps"],
+    threads: config["resources"]["haplotypecaller"]["threads"]
+    shell:
+        'java -Xmx10500m -Xms10500m -XX:ParallelGCThreads={threads} -XX:+AggressiveHeap -jar /usr/share/java/GenomeAnalysisTK.jar -T HaplotypeCaller {params.options} -R {params.reference} --dbsnp {params.known_snps} -L {params.bed} -I {input.bam} -o {output.vcf} 2>&1 | tee -a {log}'
+
+rule vardict:
+    input:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam",
+        bai = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bai"
+    output:
+        vcf = "{DIR}/{sample}/vardict/{sample}_VD.vcf",
+    message:
+        "Calling variants with Vardict from {input.bam}"
+    log: 
+        "{DIR}/logs/{sample}/vardict.log"
+    benchmark:
+        "{DIR}/{sample}.vd.benchmark.txt"
+    params:
+        options = config["rules"]["vardict"]["options"],
+        var2vcf = config["rules"]["vardict"]["var2vcf"],
+        reference = config["ref"]["fasta"],
+        bed = config["ref"]["bed"],
+    threads: config["resources"]["vardict"]["threads"]
+    shell:
+        """/usr/share/java/bin/VarDict -G {params.reference} {params.options} \
+        -b {input.bam} {params.bed} | cut -f -34 | /usr/share/java/bin/teststrandbias.R \
+        | /usr/share/java/bin/var2vcf_valid.pl -N {wildcards.sample} {params.var2vcf} \
+        > {output} 2> {log}"""
+
+rule pindel:
+    input:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam",
+        bai = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bai"
+    output:
+        vcf = "{DIR}/{sample}/pindel/{sample}_PL.vcf"
+    message:
+        "Calling variants with Pindel from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/pindel.log"
+    benchmark:
+        "{DIR}/{sample}.pl.benchmark.txt"
+    params:
+      options = config["rules"]["pindel"]["options"],
+      reference = config["ref"]["fasta"],
+      bed = config["ref"]["bed"],
+      insert_size = config["rules"]["pindel"]["insert_size"],
+      pindel2vcf = config["rules"]["pindel"]["pindel2vcf"],
+      name = config["ref"]["build"],
+      date = config["ref"]["date"],
+    threads: config["resources"]["pindel"]["threads"]
+    shell:
+        """pindel -T {threads} {params.options} -f {params.reference} -j {params.bed} -i <(echo \"{input.bam} {params.insert_size} {wildcards.sample}\") -o {wildcards.DIR}/{wildcards.sample}/pindel/{wildcards.sample}_PL 2>&1 \
+        | tee -a {log} \
+        && pindel2vcf {params.pindel2vcf} -r {params.reference} -R {params.name} -d {params.date} -P {wildcards.DIR}/{wildcards.sample}/pindel/{wildcards.sample}_PL -v {output} 2>&1 \
+        | tee -a {log}"""
+
+rule varscan:
+    input:
+        pileup = "{DIR}/{sample}/mpileup/{sample}.pileup"
+    output:
+        vcf = "{DIR}/{sample}/varscan/{sample}_VS.vcf"
+    message:
+        "Calling variants with Varscan from {input.pileup}"
+    log:
+        "{DIR}/logs/{sample}/varscan.log"
+    benchmark:
+        "{DIR}/{sample}.vs.benchmark.txt"
+    params:
+        options = config["rules"]["varscan"]["options"],
+        version = config["rules"]["varscan"]["version"]
+    threads: config["resources"]["varscan"]["threads"]
+    shell:
+        'java -Xmx7500m -Xms7500m -XX:ParallelGCThreads={threads} -XX:+AggressiveHeap -jar /usr/share/java/{params.version}.jar mpileup2cns {input.pileup} {params.options} --vcf-sample-list <(echo \"{wildcards.sample}\") > {output} 2> {log}'
+
+rule deepvariant:
+    input:
+        bam = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bam",
+        bai = "{DIR}/{sample}/applyBQSR/{sample}.bqsr.bai",
+    output:
+        vcf="{DIR}/{sample}/deepvariant/{sample}_DV.vcf",
+        report="{DIR}/{sample}/deepvariant/{sample}_DV.visual_report.html"
+    message: "Calling variants with DeepVariant from {input.bam}"
+    log:
+        "{DIR}/logs/{sample}/deepvariant.log"
+    benchmark:
+        "{DIR}/benchmarks/calls/{sample}_deepvariant.benchmark.txt"
+    params:
+        workdir=config["workdir"],
+        model=config["rules"]["deepvariant"]["model"],
+        reference=config["ref"]["fasta"],
+        bed = config["ref"]["bed"]
+    threads: config["resources"]["deepvariant"]["threads"]
+    shell:
+        "set -euo pipefail; /opt/deepvariant/bin/run_deepvariant "
+        "--model_type {params.model} "
+        "--vcf_stats_report true "
+        "--ref {params.reference} "
+        "--reads {input.bam} "
+        "--output_vcf {output.vcf} "
+        "--regions {params.bed} "
+        "--intermediate_results_dir {params.workdir}{wildcards.DIR}/{wildcards.sample}/deepvariant/temp/ "
+        "--num_shards {threads}"
+
+rule decompose:
+    input:
+        vcf = "{DIR}/{sample}/{VC}/{sample}_{ID}.vcf"
+    output:
+        vcf = "{DIR}/{sample}/decompose/{VC}/{sample}_{ID}.vcf"
+    message:
+        "Decomposing {input.vcf}"
+    log:
+        "{DIR}/logs/{sample}/{VC}/decompose_{ID}.log"
+    params:
+        options = config["rules"]["decompose"]["options"],
+    shell:
+        'vt decompose {params.options} {input.vcf} -o {output.vcf} 2>&1 | tee -a {log}'
+
+rule normalize:
+    input:
+        vcf = "{DIR}/{sample}/decompose/{VC}/{sample}_{ID}.vcf"
+    output:
+        vcf = "{DIR}/{sample}/normalize/{VC}/{sample}_{ID}.vcf"
+    message:
+        "Normalizing {input.vcf}"
+    log:
+        "{DIR}/logs/{sample}/{VC}/normalize_{ID}.log"
+    params:
+        options = config["rules"]["normalize"]["options"],
+        reference = config["ref"]["fasta"]
+    shell:
+        'vt normalize {params.options} -r {params.reference} {input.vcf} -o {output.vcf} 2>&1 | tee -a {log}'
+
+rule uniq:
+    input:
+        vcf = "{DIR}/{sample}/normalize/{VC}/{sample}_{ID}.vcf"
+    output:
+        vcf = "{DIR}/{sample}/uniq/{VC}/{sample}_{ID}.vcf"
+    message:
+        "Removing duplicated variants from {input.vcf}"
+    log:
+        "{DIR}/logs/{sample}/{VC}/uniq_{ID}.log"
+    params:
+        options = config["rules"]["uniq"]["options"]
+    shell:
+        'vt uniq {params.options} -o {output.vcf} {input.vcf} 2>&1 | tee -a {log}'
+
+rule vusion:
+    input:
+        mpileup = "{DIR}/{sample}/mpileup/{sample}.pileup",
+        VS = "{DIR}/{sample}/uniq/varscan/{sample}_VS.vcf",
+        VD = "{DIR}/{sample}/uniq/vardict/{sample}_VD.vcf",
+        PL = "{DIR}/{sample}/uniq/pindel/{sample}_PL.vcf",
+        HC = "{DIR}/{sample}/uniq/haplotypecaller/{sample}_HC.vcf",
+        DV = "{DIR}/{sample}/uniq/deepvariant/{sample}_DV.vcf"
+    output:
+        vcf = "{DIR}/{sample}/vusion/{sample}.vcf"
+    message:
+        "Merging variant calling results."
+    log:
+        "{DIR}/logs/{sample}/vusion.log"
+    params:
+        options = config["rules"]["vusion"]["options"],
+        reference = config["ref"]["fasta"],
+        workdir = config["workdir"]
+    shell:
+        """
+        /usr/local/bin/vusion {params.options} \
+        --reference {params.reference}.fai \
+        --sample {wildcards.sample} \
+        --vcf VS,{input.VS} \
+        --vcf VD,{input.VD} \
+        --vcf PL,{input.PL} \
+        --vcf HC,{input.HC} \
+        --vcf DV,{input.DV} \
+        --pileup {input.mpileup} \
+        --output {params.workdir}{wildcards.DIR}/{wildcards.sample}/vusion 2>&1 | tee -a {log}"""
+
+rule vcfstats:
+    input:
+        vcf = "{DIR}/{sample}/vusion/{sample}.vcf"
+    output:
+        summary = "{DIR}/{sample}/vusion/{sample}.vcf.stats"
+    message:
+        "Collecting statistics from {input.vcf}"
+    log:
+        "{DIR}/logs/{sample}/vcfstats.log"
+    params:
+        options = config["rules"]["vcfstats"]["options"]
+    shell:
+        'bcftools stats {params.options} {input.vcf} > {output.summary} 2> {log}'
+
+rule multiqc:
+    input:
+        fastqcR1 = "{DIR}/{sample}/fastqc/{sample}.R1.trim_fastqc.html",
+        fastqcR2 = "{DIR}/{sample}/fastqc/{sample}.R2.trim_fastqc.html",
+        flagstat = "{DIR}/{sample}/flagstat/{sample}.flagstat.txt",
+        mosdepth = "{DIR}/{sample}/mosdepth/{sample}.mosdepth.summary.txt",
+        duplicate_metrics = "{DIR}/{sample}/collectDuplicateMetrics/{sample}.duplicate.metrics.txt",
+        aln_metrics = "{DIR}/{sample}/collectAlignmentSummaryMetrics/{sample}.alignment.metrics.txt",
+        hs_metrics = "{DIR}/{sample}/collectHsMetrics/{sample}.hs.metrics.txt",
+        idxstats = "{DIR}/{sample}/idxstats/{sample}.idxstats.txt",
+        insert_metrics = "{DIR}/{sample}/collectInsertSizeMetrics/{sample}.insert_size.metrics.txt",
+        qualimap = "{DIR}/{sample}/qualimap/qualimapReport.html",
+        vcfstats = "{DIR}/{sample}/vusion/{sample}.vcf.stats"
+    output:
+        report = "{DIR}/{sample}/multiqc/{sample}.multiqc.html"
+    message:
+        "Running MultiQC on {input.fastqcR1}, {input.fastqcR2}, {input.flagstat}, {input.mosdepth}, {input.aln_metrics}, {input.duplicate_metrics}, {input.hs_metrics}, {input.idxstats}, {input.insert_metrics}, {input.qualimap}, {input.vcfstats}"
+    log:
+        "{DIR}/logs/{sample}/multiqc.log"
+    params:
+        options = config["rules"]["multiqc"]["options"],
+        workdir = config["workdir"]
+    shell:
+        'multiqc -n {output.report} {params.options} {params.workdir}{wildcards.DIR}/{wildcards.sample}/fastqc {input.flagstat} {input.mosdepth} {input.aln_metrics} {input.duplicate_metrics} {input.hs_metrics} {input.idxstats} {input.insert_metrics} {params.workdir}{wildcards.DIR}/{wildcards.sample}/qualimap {input.vcfstats}'

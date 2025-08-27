@@ -1,0 +1,153 @@
+resources:
+  bbduk:
+    threads: 8
+  bwa:
+    threads: 14
+  filtering:
+    threads: 3
+  fixmate:
+    threads: 8
+  markduplicates:
+    threads: 8
+  realignerTargetCreator:
+    threads: 8
+  indelRealigner:
+    threads: 8
+  baseRecalibrator:
+    threads: 8
+  applyBQSR:
+    threads: 8
+  collectHsMetrics:
+    threads: 3
+  collectDuplicateMetrics:
+    threads: 3
+  haplotypecaller:
+    threads: 8
+  vardict:
+    threads: 2
+  pindel:
+    threads: 8
+  varscan:
+    threads: 2
+  deepvariant:
+    threads: 20
+
+
+ref:
+  fasta: uri/to/fasta
+  know_indels: uri/to/know_indels
+  know_snps: uri/to/know_snps
+  bed: uri/to/bed
+  build: reference_name
+  date: YYYYMMDD
+
+metadatas:
+  panel_name: panel_name
+  hospit: hospit
+  sequencer: sequencer
+  target_type: target_type
+
+data: uri/to/data
+
+samples:
+
+workdir: uri/to/workdir
+
+tmpdir: uri/to/tmpdir
+
+rules:
+  bbduk:
+    options: minlen=45 tpe tbo hdist=1 qtrim=rl trimq=20 ktrim=r
+    adapters: uri/to/adapters
+
+  fastqc: 
+    options: -f fastq
+    
+  bwa:
+    options: -M
+
+  collectAlignmentSummaryMetrics:
+    options: VALIDATION_STRINGENCY=LENIENT
+
+  flagstat:
+    options: ""
+
+  mosdepth:
+    options: -n
+
+  fixmate: 
+    options: ""
+      
+  markduplicates: 
+    options: VALIDATION_STRINGENCY=SILENT REMOVE_DUPLICATES=true ASSUME_SORT_ORDER=coordinate CREATE_INDEX=true
+
+  collectDuplicateMetrics:
+    options: --VALIDATION_STRINGENCY LENIENT
+      
+  realignerTargetCreator: 
+    options: -nt 8
+
+  indelRealigner: 
+    options: ""
+
+  baseRecalibrator: 
+    options: ""
+    
+  applyBQSR: 
+    options: ""
+
+  idxstats:
+    options: ""
+
+  collectInsertSizeMetrics:
+    options: DEVIATIONS=10.0 MINIMUM_PCT=0.05 ASSUME_SORTED=true METRIC_ACCUMULATION_LEVEL=ALL_READS VALIDATION_STRINGENCY=LENIENT QUIET=true
+
+  qualimap:
+    options: ""
+
+  validate:
+    options: ""
+
+  collectHsMetrics:
+    options: QUIET=true VERBOSITY=ERROR VALIDATION_STRINGENCY=LENIENT
+
+  mpileup:
+    samtools:
+      options: -Q 0 -d 1000000 -A -B
+
+  haplotypecaller:
+    options: -nct 4 --maxReadsInRegionPerSample 1000000 -mbq 0
+
+  vardict:
+    options: -z 1 -c 1 -S 2 -E 3 -g 4 -U -L 50000 -Y 50000 -k 0 -X 0
+    var2vcf: -E -f 0.01 -A
+
+  pindel:
+    options: -E 0.95 -u 0.01 -e 0.005 -M 10 -c ALL -R true --IndelCorrection true
+    pindel2vcf: --gatk_compatible --min_supporting_reads 10
+    insert_size: 400
+
+  varscan:
+    options: --min-coverage 100 --min-avg-qual 0 --min-var-freq 0.01 --strand-filter 0 --variants --output-vcf 1
+    version: VarScan.v2.4.3
+
+  deepvariant:
+    model: WES
+
+  decompose:
+    options: -s
+
+  normalize:
+    options: -q -m -n
+
+  uniq:
+    options: ""
+
+  vusion:
+    options: --thresholds 10,30,40,60,70,80,20,30,50,1 --disable-strand-bias
+
+  vcfstats:
+    options: ""
+
+  multiqc:
+    options: -f
